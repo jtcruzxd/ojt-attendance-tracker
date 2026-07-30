@@ -3,7 +3,6 @@
  *
  * Usage:
  *   npm run seed
- *   # or: npx tsx scripts/seed-test-accounts.ts
  *
  * Requires DATABASE_URL (and BETTER_AUTH_SECRET) in .env.local or .env
  */
@@ -13,7 +12,7 @@ import { resolve } from 'node:path'
 
 function loadEnvFile(filePath: string) {
   if (!existsSync(filePath)) return
-  for (const line of readFileSync(filePath, 'utf8').split('\n')) {
+  for (const line of readFileSync(filePath, 'utf8').split(/\r?\n/)) {
     const trimmed = line.trim()
     if (!trimmed || trimmed.startsWith('#')) continue
     const eqIndex = trimmed.indexOf('=')
@@ -34,6 +33,9 @@ function loadEnvFile(filePath: string) {
 
 loadEnvFile(resolve(process.cwd(), '.env.local'))
 loadEnvFile(resolve(process.cwd(), '.env'))
+
+// Local seed must not inherit production BETTER_AUTH_URL from vercel env pull
+process.env.BETTER_AUTH_URL = 'http://localhost:3000'
 
 const TEST_ACCOUNTS = [
   {
@@ -61,34 +63,36 @@ async function main() {
   const { and, eq } = await import('drizzle-orm')
   const { auth } = await import('../lib/auth')
   const { db, pool } = await import('../lib/db')
-  const { teamAssignment, user } = await import('../lib/db/schema')
+  const { account, session, teamAssignment, user } =
+    await import('../lib/db/schema')
 
-  async function ensureAccount(account: (typeof TEST_ACCOUNTS)[number]) {
+  async function wipeUser(email: string) {
     const existing = await db
       .select()
       .from(user)
-      .where(eq(user.email, account.email))
+      .where(eq(user.email, email))
       .limit(1)
+    if (existing.length === 0) return
 
-    if (existing.length > 0) {
-      const row = existing[0]
-      if (row.role !== account.role) {
-        await db
-          .update(user)
-          .set({ role: account.role, updatedAt: new Date() })
-          .where(eq(user.id, row.id))
-        console.log(`Updated role for ${account.email} → ${account.role}`)
-      } else {
-        console.log(`Already exists: ${account.email} (${row.role})`)
-      }
-      return row.id
-    }
+    const userId = existing[0].id
+    await db.delete(teamAssignment).where(eq(teamAssignment.internId, userId))
+    await db
+      .delete(teamAssignment)
+      .where(eq(teamAssignment.supervisorId, userId))
+    await db.delete(session).where(eq(session.userId, userId))
+    await db.delete(account).where(eq(account.userId, userId))
+    await db.delete(user).where(eq(user.id, userId))
+    console.log(`Removed stale user ${email}`)
+  }
+
+  async function ensureAccount(accountDef: (typeof TEST_ACCOUNTS)[number]) {
+    await wipeUser(accountDef.email)
 
     const result = await auth.api.signUpEmail({
       body: {
-        name: account.name,
-        email: account.email,
-        password: account.password,
+        name: accountDef.name,
+        email: accountDef.email,
+        password: accountDef.password,
       },
     })
 
@@ -96,10 +100,10 @@ async function main() {
 
     await db
       .update(user)
-      .set({ role: account.role, updatedAt: new Date() })
+      .set({ role: accountDef.role, updatedAt: new Date() })
       .where(eq(user.id, userId))
 
-    console.log(`Created ${account.email} (${account.role})`)
+    console.log(`Created ${accountDef.email} (${accountDef.role})`)
     return userId
   }
 

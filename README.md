@@ -88,11 +88,12 @@ pnpm install
 ### 3. Seed Test Accounts
 
 ```bash
+npm run db:migrate-auth
 npm run seed
-# or: pnpm seed
+# or: pnpm db:migrate-auth && pnpm seed
 ```
 
-This creates (or updates) demo accounts and links the intern to the admin:
+This migrates Better Auth columns if needed, then creates (or recreates) demo accounts and links the intern to the admin:
 
 | Role | Email | Password |
 |------|-------|----------|

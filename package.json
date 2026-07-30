@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "seed": "tsx scripts/seed-test-accounts.ts"
+    "seed": "tsx scripts/seed-test-accounts.ts",
+    "db:migrate-auth": "tsx scripts/migrate-auth-schema.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.5.0",
