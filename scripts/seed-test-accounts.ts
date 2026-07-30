@@ -1,0 +1,146 @@
+/**
+ * Seeds demo admin (supervisor) and intern accounts for local/dev use.
+ *
+ * Usage:
+ *   npm run seed
+ *   # or: npx tsx scripts/seed-test-accounts.ts
+ *
+ * Requires DATABASE_URL (and BETTER_AUTH_SECRET) in .env.local or .env
+ */
+
+import { existsSync, readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+function loadEnvFile(filePath: string) {
+  if (!existsSync(filePath)) return
+  for (const line of readFileSync(filePath, 'utf8').split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const eqIndex = trimmed.indexOf('=')
+    if (eqIndex === -1) continue
+    const key = trimmed.slice(0, eqIndex).trim()
+    let value = trimmed.slice(eqIndex + 1).trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+    if (process.env[key] === undefined) {
+      process.env[key] = value
+    }
+  }
+}
+
+loadEnvFile(resolve(process.cwd(), '.env.local'))
+loadEnvFile(resolve(process.cwd(), '.env'))
+
+const TEST_ACCOUNTS = [
+  {
+    name: 'Test Admin',
+    email: 'admin@ojt.test',
+    password: 'Admin1234!',
+    // App elevated role is "supervisor" (admin dashboard is not implemented yet)
+    role: 'supervisor' as const,
+  },
+  {
+    name: 'Test Intern',
+    email: 'intern@ojt.test',
+    password: 'Intern1234!',
+    role: 'intern' as const,
+  },
+] as const
+
+async function main() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error(
+      'DATABASE_URL is missing. Copy .env.example to .env.local, set your Neon URL, then re-run.',
+    )
+  }
+
+  const { and, eq } = await import('drizzle-orm')
+  const { auth } = await import('../lib/auth')
+  const { db, pool } = await import('../lib/db')
+  const { teamAssignment, user } = await import('../lib/db/schema')
+
+  async function ensureAccount(account: (typeof TEST_ACCOUNTS)[number]) {
+    const existing = await db
+      .select()
+      .from(user)
+      .where(eq(user.email, account.email))
+      .limit(1)
+
+    if (existing.length > 0) {
+      const row = existing[0]
+      if (row.role !== account.role) {
+        await db
+          .update(user)
+          .set({ role: account.role, updatedAt: new Date() })
+          .where(eq(user.id, row.id))
+        console.log(`Updated role for ${account.email} → ${account.role}`)
+      } else {
+        console.log(`Already exists: ${account.email} (${row.role})`)
+      }
+      return row.id
+    }
+
+    const result = await auth.api.signUpEmail({
+      body: {
+        name: account.name,
+        email: account.email,
+        password: account.password,
+      },
+    })
+
+    const userId = result.user.id
+
+    await db
+      .update(user)
+      .set({ role: account.role, updatedAt: new Date() })
+      .where(eq(user.id, userId))
+
+    console.log(`Created ${account.email} (${account.role})`)
+    return userId
+  }
+
+  async function ensureTeamLink(internId: string, supervisorId: string) {
+    const existing = await db
+      .select()
+      .from(teamAssignment)
+      .where(
+        and(
+          eq(teamAssignment.internId, internId),
+          eq(teamAssignment.supervisorId, supervisorId),
+        ),
+      )
+      .limit(1)
+
+    if (existing.length > 0) {
+      console.log('Team assignment already linked')
+      return
+    }
+
+    await db.insert(teamAssignment).values({
+      internId,
+      supervisorId,
+    })
+    console.log('Linked intern → admin (supervisor)')
+  }
+
+  try {
+    const adminId = await ensureAccount(TEST_ACCOUNTS[0])
+    const internId = await ensureAccount(TEST_ACCOUNTS[1])
+    await ensureTeamLink(internId, adminId)
+
+    console.log('\nTest accounts ready:')
+    console.log('  Admin  → admin@ojt.test  / Admin1234!')
+    console.log('  Intern → intern@ojt.test / Intern1234!')
+  } finally {
+    await pool.end()
+  }
+}
+
+main().catch((error) => {
+  console.error('Seed failed:', error)
+  process.exitCode = 1
+})
